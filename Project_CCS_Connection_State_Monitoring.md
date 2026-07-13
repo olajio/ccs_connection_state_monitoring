@@ -27,8 +27,12 @@ From `GET /_remote/info` per remote, each probe cycle:
 | Connection mode | `mode` (`sniff`/`proxy`) | Unexpected mode change |
 | Connect timeout | `initial_connect_timeout` | Drift from baseline |
 | Skip-unavailable | `skip_unavailable` | If `true`, degradation may be silent downstream |
+| Remote presence in inventory | baseline vs `_remote/info` keys | Baseline remote **absent** from response = config drift / removed remote |
+| Local cluster reachability | HTTP call to local `_remote/info` | Local cluster unreachable = collector cannot measure at all |
 
-**Severity:** Healthy = connected + node count matches expected · Warning = connected but node count below expected (partial pool) · Critical = `connected: false`. "Expected" is per-remote, defined in Phase 0 — not assumed uniform across environments.
+**Severity:** Healthy = connected + node count matches expected · Warning = connected but node count below expected (partial pool), or connection `mode` drifted from baseline · Critical = `connected: false`, **a baseline remote missing from `_remote/info` entirely**, or the **local cluster is unreachable** (probe failed). Remotes present in `_remote/info` but *not* in the baseline are surfaced as an informational "unmonitored remote" signal (possible undocumented config change). "Expected" is per-remote, defined in Phase 0 — not assumed uniform across environments.
+
+**Isolation:** each remote is evaluated independently, and each local cluster is probed independently — one failing remote or one unreachable cluster must never abort evaluation of the others. A per-cluster probe failure yields a single Critical verdict for that cluster rather than a silent gap.
 
 ---
 
@@ -111,3 +115,15 @@ Every remote probed on schedule · collapsed pool → critical within one probe+
 4. `.ccs-health-monitor` retention period
 5. Which Kibana space hosts the rules, given the multi-space layout
 6. Notification routing — single inbox vs per-environment recipients
+
+---
+
+## 10. Plan review notes (corrections applied)
+
+The following gaps were identified during review and folded into the plan above; they are the behaviors the Phase 1 collector implements:
+
+- **Missing-remote detection.** A remote that exists in the Phase 0 baseline but does not appear in `_remote/info` at all is a real degradation/config-drift signal, not "healthy by omission." It is now classified **Critical**, distinct from `connected: false`.
+- **Local-cluster-unreachable handling.** If the collector cannot reach a local cluster's `_remote/info` endpoint (network, auth, TLS), that cluster must emit a single **Critical** verdict rather than produce no verdict — otherwise a dead probe looks like health. (The Phase 3 staleness rule remains the backstop for a fully dead collector.)
+- **Per-remote / per-cluster isolation.** One failing remote or one unreachable cluster must never abort the evaluation loop for the others. Each remote and each cluster is evaluated in isolation.
+- **Unexpected/unmonitored remotes.** Remotes seen in `_remote/info` but absent from the baseline are surfaced as an informational signal so undocumented config changes are visible.
+- **Testing/first-run (this phase).** The initial collector prints verdicts to screen only — no writes to `.ccs-health-monitor` — for validation. Indexing, alerting, scheduling, and hardening (Phases 2–4) follow. Credentials are read from a local file in this phase and refactored to AWS Secrets Manager in Phase 1 hardening.

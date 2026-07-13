@@ -1,0 +1,43 @@
+{
+  "_comment": "Inventory of LOCAL clusters and the per-remote baseline used to judge connection-state health. 'expected_nodes' and 'expected_mode' come from Phase 0 baselining. Replace the example hosts/remotes with real values.",
+  "clusters": [
+    {
+      "name": "dev",
+      "base_url": "https://dev-es.example.com:9200",
+      "verify_certs": true,
+      "ca_cert": null,
+      "expected_remotes": {
+        "remote_dev_a": { "expected_nodes": 3, "expected_mode": "sniff" },
+        "remote_dev_b": { "expected_nodes": 2, "expected_mode": "proxy" }
+      }
+    },
+    {
+      "name": "qa",
+      "base_url": "https://qa-es.example.com:9200",
+      "verify_certs": true,
+      "ca_cert": null,
+      "expected_remotes": {
+        "remote_qa_a": { "expected_nodes": 3, "expected_mode": "sniff" }
+      }
+    },
+    {
+      "name": "prod",
+      "base_url": "https://prod-es.example.com:9200",
+      "verify_certs": true,
+      "ca_cert": null,
+      "expected_remotes": {
+        "remote_prod_a": { "expected_nodes": 3, "expected_mode": "sniff" },
+        "remote_prod_b": { "expected_nodes": 3, "expected_mode": "sniff" }
+      }
+    },
+    {
+      "name": "ccs",
+      "base_url": "https://ccs-es.example.com:9200",
+      "verify_certs": true,
+      "ca_cert": null,
+      "expected_remotes": {
+        "remote_ccs_a": { "expected_nodes": 3, "expected_mode": "sniff" }
+      }
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+# Real credentials — never commit. Use credentials.example.json as the template.
+credentials.json
+*.local.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
