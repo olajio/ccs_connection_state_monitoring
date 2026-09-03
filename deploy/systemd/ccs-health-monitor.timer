@@ -1,0 +1,21 @@
+# Timer for the collector (CCS-20). Keep OnUnitActiveSec in step with the Kibana
+# alert window: the window must be wider than this interval (see crontab.example).
+#
+# RandomizedDelaySec staggers the probe so several monitored clusters are not hit
+# at the same instant; it is well inside the alert window, so it cannot cause a
+# false recovery.
+
+[Unit]
+Description=Run the CCS remote connection-state health check every 5 minutes
+Documentation=file:/opt/ccs-health-monitor/docs/RUNBOOK.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=20s
+AccuracySec=10s
+Persistent=false
+Unit=ccs-health-monitor.service
+
+[Install]
+WantedBy=timers.target

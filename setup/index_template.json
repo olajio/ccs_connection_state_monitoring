@@ -1,0 +1,104 @@
+{
+  "_comment": "Mapping for the ccs-health-monitor state store (Phase 0 schema / CCS-5, applied by CCS-11). setup_state_store.py wraps this in an index template and injects the settings, data-stream flag, and lifecycle. Field names are a contract shared with the Kibana rules in alerting/rules/ — see docs/SCHEMA.md before changing any of them.",
+  "dynamic": "strict",
+  "_source": { "enabled": true },
+  "properties": {
+    "@timestamp": { "type": "date" },
+
+    "event": {
+      "properties": {
+        "kind":     { "type": "keyword" },
+        "category": { "type": "keyword" },
+        "dataset":  { "type": "keyword" },
+        "module":   { "type": "keyword" },
+        "severity": { "type": "byte" },
+        "duration_ms": { "type": "float" }
+      }
+    },
+
+    "run": {
+      "properties": {
+        "id":       { "type": "keyword" },
+        "version":  { "type": "keyword" },
+        "host":     { "type": "keyword" },
+        "user":     { "type": "keyword" },
+        "pid":      { "type": "integer" },
+        "platform": { "type": "keyword", "ignore_above": 256 }
+      }
+    },
+
+    "ccs": {
+      "properties": {
+        "doc_type":      { "type": "keyword" },
+        "local_cluster": { "type": "keyword" },
+        "environment":   { "type": "keyword" },
+        "remote":        { "type": "keyword" },
+        "alert_key":     { "type": "keyword" },
+        "severity":      { "type": "keyword" },
+        "severity_rank": { "type": "byte" },
+        "monitored":     { "type": "boolean" },
+        "connected":     { "type": "boolean" },
+
+        "nodes": {
+          "properties": {
+            "expected":       { "type": "integer" },
+            "actual":         { "type": "integer" },
+            "max_configured": { "type": "integer" },
+            "deficit":        { "type": "integer" }
+          }
+        },
+
+        "mode": {
+          "properties": {
+            "expected": { "type": "keyword" },
+            "actual":   { "type": "keyword" },
+            "drift":    { "type": "boolean" }
+          }
+        },
+
+        "initial_connect_timeout": {
+          "properties": {
+            "expected": { "type": "keyword" },
+            "actual":   { "type": "keyword" },
+            "drift":    { "type": "boolean" }
+          }
+        },
+
+        "skip_unavailable":          { "type": "boolean" },
+        "skip_unavailable_expected": { "type": "boolean" },
+        "skip_unavailable_drift":    { "type": "boolean" },
+
+        "seeds":         { "type": "keyword", "ignore_above": 256 },
+        "proxy_address": { "type": "keyword", "ignore_above": 256 },
+
+        "reason": {
+          "type": "text",
+          "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } }
+        },
+        "reason_codes": { "type": "keyword" },
+
+        "probe": {
+          "properties": {
+            "ok":          { "type": "boolean" },
+            "duration_ms": { "type": "float" },
+            "error":       { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 1024 } } },
+            "error_kind":  { "type": "keyword" }
+          }
+        },
+
+        "clusters_total":       { "type": "integer" },
+        "clusters_probed_ok":   { "type": "integer" },
+        "clusters_unreachable": { "type": "integer" },
+        "verdicts_total":       { "type": "integer" },
+        "counts": {
+          "properties": {
+            "healthy":  { "type": "integer" },
+            "info":     { "type": "integer" },
+            "warning":  { "type": "integer" },
+            "critical": { "type": "integer" }
+          }
+        }
+      }
+    }
+  }
+}

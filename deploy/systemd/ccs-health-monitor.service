@@ -1,0 +1,52 @@
+# Systemd alternative to cron (CCS-20). Prefer this where systemd is available:
+# it gives structured journal output, per-run resource accounting, and hardening
+# directives cron cannot provide.
+#
+#   sudo cp deploy/systemd/ccs-health-monitor.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ccs-health-monitor.timer
+#   systemctl list-timers ccs-health-monitor.timer
+
+[Unit]
+Description=CCS remote connection-state health check
+Documentation=file:/opt/ccs-health-monitor/docs/RUNBOOK.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ccs-monitor
+Group=ccs-monitor
+WorkingDirectory=/opt/ccs-health-monitor
+
+Environment=AWS_DEFAULT_REGION=us-gov-east-1
+Environment=AWS_REGION=us-gov-east-1
+
+ExecStart=/opt/ccs-health-monitor/venv/bin/python /opt/ccs-health-monitor/ccs_health_check.py \
+    --clusters /opt/ccs-health-monitor/es_clusters.json \
+    --log-file /var/log/ccs-health-monitor/collector.log \
+    --log-format json --quiet --no-color
+
+# Exit code 1 means "remotes are degraded" — that is a successful collector run
+# reporting bad news, not a failed unit. 2 (config) and 3 (write failure) stay
+# failures so systemctl and any node-level monitoring surface them.
+SuccessExitStatus=0 1
+
+TimeoutStartSec=300
+
+# Hardening: the collector reads config, writes one log, and talks HTTPS.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/var/log/ccs-health-monitor
+
+[Install]
+WantedBy=multi-user.target

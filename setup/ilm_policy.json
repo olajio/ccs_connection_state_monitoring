@@ -1,0 +1,27 @@
+{
+  "_comment": "ILM policy skeleton for the ccs-health-monitor state store (CCS-12). setup_state_store.py substitutes the rollover thresholds and the delete min_age from state_store.rollover_* and state_store.retention in es_clusters.json. Used when state_store.lifecycle is 'ilm'; with lifecycle 'dsl' the data stream's own retention is used instead and this file is not applied.",
+  "policy": {
+    "_meta": {
+      "description": "Retention for CCS remote connection-state verdicts",
+      "project": "CCS Remote Connection-State Degradation Monitoring",
+      "managed_by": "setup/setup_state_store.py"
+    },
+    "phases": {
+      "hot": {
+        "min_age": "0ms",
+        "actions": {
+          "rollover": {
+            "max_age": "{{rollover_max_age}}",
+            "max_primary_shard_size": "{{rollover_max_primary_shard_size}}"
+          }
+        }
+      },
+      "delete": {
+        "min_age": "{{retention}}",
+        "actions": {
+          "delete": {}
+        }
+      }
+    }
+  }
+}

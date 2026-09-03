@@ -1,0 +1,30 @@
+{
+  "_comment": "Optional informational tier (plan section 10, 'Unexpected/unmonitored remotes'). Surfaces remotes that exist in _remote/info but are absent from the Phase-0 baseline — an undocumented configuration change. Runs on a slow schedule and routes to a low-urgency destination; created only when setup_alerting.py is given --include-info.",
+  "rule_id": "ccs-connection-state-unmonitored",
+  "name": "CCS connection state — unmonitored remote detected",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["ccs", "connection-state", "info", "config-drift", "elk-platform"],
+  "schedule": { "interval": "1h" },
+  "params": {
+    "searchType": "esQuery",
+    "index": ["{{index}}"],
+    "timeField": "@timestamp",
+    "esQuery": "{\"query\":{\"bool\":{\"filter\":[{\"term\":{\"ccs.doc_type\":\"remote\"}},{\"term\":{\"ccs.monitored\":false}}]}}}",
+    "size": 10,
+    "aggType": "count",
+    "groupBy": "top",
+    "termField": "ccs.alert_key",
+    "termSize": 100,
+    "thresholdComparator": ">",
+    "threshold": [0],
+    "timeWindowSize": 1,
+    "timeWindowUnit": "h",
+    "excludeHitsFromPreviousRun": false
+  },
+  "action_subject": "[CCS INFO] Unmonitored remote {{context.group}}",
+  "action_message": "INFO: a remote is configured on a local cluster but is absent from the Phase-0 baseline.\n\nAlert key (local_cluster:remote): {{context.group}}\n\n{{#context.hits}}  - {{_source.ccs.local_cluster}} / {{_source.ccs.remote}}: connected={{_source.ccs.connected}}, mode={{_source.ccs.mode.actual}}, skip_unavailable={{_source.ccs.skip_unavailable}}\n{{/context.hits}}\nThis is not a fault. It means someone added a remote without updating es_clusters.json, so its connection state is not being judged against any baseline. Either add it to the baseline (CCS-2) or remove it from the cluster.\n\nRule: {{rule.name}}\nView: {{context.link}}",
+  "recovery_subject": "[CCS RECOVERED] Unmonitored remote {{context.group}} resolved",
+  "recovery_message": "RECOVERED: {{context.group}} is no longer reported as unmonitored — it has been added to the baseline or removed from the cluster.\n\nRule: {{rule.name}}\nView: {{context.link}}"
+}

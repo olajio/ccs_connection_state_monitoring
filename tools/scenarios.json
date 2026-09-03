@@ -1,0 +1,207 @@
+{
+  "_comment": "Scenarios for tools/mock_es_server.py. Each entry supplies a GET /_remote/info body (and optionally 'fail_with' to make every request return that HTTP status). These mirror the degradation cases the collector must classify; docs/HOWTO.md drives them in order.",
+
+  "healthy": {
+    "_description": "Everything at baseline: HEALTHY.",
+    "remote_info": {
+      "remote_dev_a": {
+        "connected": true,
+        "mode": "sniff",
+        "seeds": ["10.0.1.10:9300", "10.0.1.11:9300", "10.0.1.12:9300"],
+        "num_nodes_connected": 3,
+        "max_connections_per_cluster": 3,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      },
+      "remote_dev_b": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-b.example.com:9400",
+        "server_name": "",
+        "num_proxy_sockets_connected": 2,
+        "max_proxy_socket_connections": 2,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      }
+    }
+  },
+
+  "partial_pool": {
+    "_description": "Connected but 1 of 3 nodes in the pool: WARNING.",
+    "remote_info": {
+      "remote_dev_a": {
+        "connected": true,
+        "mode": "sniff",
+        "seeds": ["10.0.1.10:9300", "10.0.1.11:9300", "10.0.1.12:9300"],
+        "num_nodes_connected": 1,
+        "max_connections_per_cluster": 3,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      },
+      "remote_dev_b": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-b.example.com:9400",
+        "num_proxy_sockets_connected": 2,
+        "max_proxy_socket_connections": 2,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      }
+    }
+  },
+
+  "disconnected": {
+    "_description": "Pool collapsed on one remote: CRITICAL.",
+    "remote_info": {
+      "remote_dev_a": {
+        "connected": false,
+        "mode": "sniff",
+        "seeds": ["10.0.1.10:9300"],
+        "num_nodes_connected": 0,
+        "max_connections_per_cluster": 3,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      },
+      "remote_dev_b": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-b.example.com:9400",
+        "num_proxy_sockets_connected": 2,
+        "max_proxy_socket_connections": 2,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      }
+    }
+  },
+
+  "missing_remote": {
+    "_description": "A baselined remote has vanished from _remote/info: CRITICAL (config drift).",
+    "remote_info": {
+      "remote_dev_b": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-b.example.com:9400",
+        "num_proxy_sockets_connected": 2,
+        "max_proxy_socket_connections": 2,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      }
+    }
+  },
+
+  "mode_drift": {
+    "_description": "Remote reconfigured sniff -> proxy behind our back: WARNING.",
+    "remote_info": {
+      "remote_dev_a": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-a.example.com:9400",
+        "num_proxy_sockets_connected": 3,
+        "max_proxy_socket_connections": 3,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      },
+      "remote_dev_b": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-b.example.com:9400",
+        "num_proxy_sockets_connected": 2,
+        "max_proxy_socket_connections": 2,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      }
+    }
+  },
+
+  "unmonitored_remote": {
+    "_description": "An undocumented remote appeared: INFO on top of a healthy baseline.",
+    "remote_info": {
+      "remote_dev_a": {
+        "connected": true,
+        "mode": "sniff",
+        "seeds": ["10.0.1.10:9300"],
+        "num_nodes_connected": 3,
+        "max_connections_per_cluster": 3,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      },
+      "remote_dev_b": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-b.example.com:9400",
+        "num_proxy_sockets_connected": 2,
+        "max_proxy_socket_connections": 2,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      },
+      "remote_undocumented_x": {
+        "connected": true,
+        "mode": "sniff",
+        "seeds": ["10.9.9.9:9300"],
+        "num_nodes_connected": 1,
+        "max_connections_per_cluster": 3,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": true
+      }
+    }
+  },
+
+  "silent_degradation": {
+    "_description": "Partial pool on a skip_unavailable=true remote — the silent-failure case. WARNING, or CRITICAL where escalate_warning_when_skip_unavailable is set.",
+    "remote_info": {
+      "remote_dev_a": {
+        "connected": true,
+        "mode": "sniff",
+        "seeds": ["10.0.1.10:9300"],
+        "num_nodes_connected": 1,
+        "max_connections_per_cluster": 3,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": true
+      },
+      "remote_dev_b": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-b.example.com:9400",
+        "num_proxy_sockets_connected": 2,
+        "max_proxy_socket_connections": 2,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      }
+    }
+  },
+
+  "timeout_drift": {
+    "_description": "initial_connect_timeout drifted from the baseline: WARNING.",
+    "remote_info": {
+      "remote_dev_a": {
+        "connected": true,
+        "mode": "sniff",
+        "seeds": ["10.0.1.10:9300"],
+        "num_nodes_connected": 3,
+        "max_connections_per_cluster": 3,
+        "initial_connect_timeout": "5s",
+        "skip_unavailable": false
+      },
+      "remote_dev_b": {
+        "connected": true,
+        "mode": "proxy",
+        "proxy_address": "remote-b.example.com:9400",
+        "num_proxy_sockets_connected": 2,
+        "max_proxy_socket_connections": 2,
+        "initial_connect_timeout": "30s",
+        "skip_unavailable": false
+      }
+    }
+  },
+
+  "no_remotes": {
+    "_description": "Every configured remote is gone: two CRITICAL missing-remote verdicts.",
+    "remote_info": {}
+  },
+
+  "unreachable": {
+    "_description": "The local cluster itself answers 503: one CRITICAL verdict for the cluster.",
+    "remote_info": {},
+    "fail_with": 503
+  }
+}

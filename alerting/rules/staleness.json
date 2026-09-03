@@ -1,0 +1,28 @@
+{
+  "_comment": "CCS-19 — the dead-collector backstop. Every collector cycle writes exactly one doc_type:run heartbeat; when none arrives inside the window, the collector is dead, the host is down, or its credential has expired — and every other rule in this project has gone quiet for the wrong reason. Not grouped: there is only one collector. The window must be comfortably wider than the cron interval (setup_alerting.py defaults it to 3x).",
+  "rule_id": "ccs-connection-state-staleness",
+  "name": "CCS connection state — collector staleness (no verdicts)",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["ccs", "connection-state", "staleness", "elk-platform"],
+  "schedule": { "interval": "{{rule_interval}}" },
+  "params": {
+    "searchType": "esQuery",
+    "index": ["{{index}}"],
+    "timeField": "@timestamp",
+    "esQuery": "{\"query\":{\"bool\":{\"filter\":[{\"term\":{\"ccs.doc_type\":\"run\"}}]}}}",
+    "size": 1,
+    "aggType": "count",
+    "groupBy": "all",
+    "thresholdComparator": "<",
+    "threshold": [1],
+    "timeWindowSize": {{staleness_window_size}},
+    "timeWindowUnit": "{{staleness_window_unit}}",
+    "excludeHitsFromPreviousRun": false
+  },
+  "action_subject": "[CCS STALE] No connection-state verdicts in {{staleness_window_size}}{{staleness_window_unit}}",
+  "action_message": "STALE COLLECTOR: no CCS connection-state verdicts have been written to {{index}} in the last {{staleness_window_size}}{{staleness_window_unit}}.\n\nHealthy silence and a dead collector look identical in every other rule — this alert is what separates them. Until it clears, treat CCS connection state as UNKNOWN, not healthy.\n\nRule: {{rule.name}}\nView: {{context.link}}\n\nRunbook: docs/RUNBOOK.md — section \"STALE\".\nCheck, in order: the cron entry / systemd timer on the collector host, the collector log, the credential's expiry, and whether the state-store cluster is reachable.",
+  "recovery_subject": "[CCS RECOVERED] Connection-state verdicts are landing again",
+  "recovery_message": "RECOVERED: verdict documents are arriving in {{index}} again. The collector is alive.\n\nRule: {{rule.name}}\nView: {{context.link}}"
+}

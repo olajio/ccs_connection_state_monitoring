@@ -1,0 +1,21 @@
+# Log rotation for the CCS connection-state collector (CCS-21).
+#   sudo cp deploy/logrotate/ccs-health-monitor /etc/logrotate.d/ccs-health-monitor
+#   sudo logrotate -d /etc/logrotate.d/ccs-health-monitor    # dry run
+#
+# copytruncate matters here: the collector opens the log with a plain FileHandler,
+# so rotating by rename would leave it writing to an unlinked inode and the log
+# would silently stop growing.
+
+/var/log/ccs-health-monitor/*.log {
+    daily
+    rotate 30
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    create 0640 ccs-monitor ccs-monitor
+    su ccs-monitor ccs-monitor
+    dateext
+    dateformat -%Y%m%d
+}

@@ -1,42 +1,125 @@
 {
-  "_comment": "Inventory of LOCAL clusters and the per-remote baseline used to judge connection-state health. 'expected_nodes' and 'expected_mode' come from Phase 0 baselining. Replace the example hosts/remotes with real values.",
+  "_comment": "Inventory of LOCAL Elasticsearch clusters plus the Phase-0 per-remote baseline used to judge connection-state health. Replace every example host, remote name, and expectation with real values from the Phase-0 baselining exercise (CCS-1/CCS-2). See docs/SCHEMA.md for the full key reference.",
+
+  "defaults": {
+    "_comment": "Applied to every cluster unless the cluster overrides them.",
+    "timeout_seconds": 10,
+    "retries": 2,
+    "retry_backoff_seconds": 0.5,
+    "severity_policy": {
+      "disconnected": "CRITICAL",
+      "partial_pool": "WARNING",
+      "critical_below_nodes": 1,
+      "mode_drift": "WARNING",
+      "timeout_drift": "WARNING",
+      "skip_unavailable_drift": "WARNING",
+      "missing_remote": "CRITICAL",
+      "unreachable_cluster": "CRITICAL",
+      "unmonitored_remote": "INFO",
+      "escalate_warning_when_skip_unavailable": false
+    }
+  },
+
+  "credentials": {
+    "_comment": "provider: 'file' (Phase 1 interim), 'aws_secrets_manager' (Phase 1 hardening, CCS-8), or 'env'. For Secrets Manager set either secret_id (one secret keyed by cluster name) or secret_id_template (one secret per cluster).",
+    "provider": "file",
+    "path": "credentials.json",
+    "secret_id": null,
+    "secret_id_template": null,
+    "region": null,
+    "profile": null
+  },
+
+  "state_store": {
+    "_comment": "Phase 2. 'cluster' names the inventory cluster that hosts the index; set base_url instead to use a dedicated monitoring cluster. The index name is deliberately NOT dot-prefixed so it is visible in Discover and needs no restricted-index grants.",
+    "enabled": true,
+    "cluster": "ccs",
+    "index": "ccs-health-monitor",
+    "mode": "data_stream",
+    "lifecycle": "dsl",
+    "retention": "90d",
+    "index_template": "ccs-health-monitor",
+    "ilm_policy": "ccs-health-monitor-policy",
+    "number_of_shards": 1,
+    "number_of_replicas": 1,
+    "write_run_document": true
+  },
+
   "clusters": [
     {
       "name": "dev",
+      "environment": "dev",
       "base_url": "https://dev-es.example.com:9200",
       "verify_certs": true,
       "ca_cert": null,
       "expected_remotes": {
-        "remote_dev_a": { "expected_nodes": 3, "expected_mode": "sniff" },
-        "remote_dev_b": { "expected_nodes": 2, "expected_mode": "proxy" }
+        "remote_dev_a": {
+          "expected_nodes": 3,
+          "expected_mode": "sniff",
+          "expected_skip_unavailable": false,
+          "expected_initial_connect_timeout": "30s",
+          "description": "Primary dev remote"
+        },
+        "remote_dev_b": {
+          "expected_nodes": 2,
+          "expected_mode": "proxy",
+          "expected_skip_unavailable": false,
+          "expected_initial_connect_timeout": "30s"
+        }
       }
     },
     {
       "name": "qa",
+      "environment": "qa",
       "base_url": "https://qa-es.example.com:9200",
       "verify_certs": true,
       "ca_cert": null,
       "expected_remotes": {
-        "remote_qa_a": { "expected_nodes": 3, "expected_mode": "sniff" }
+        "remote_qa_a": {
+          "expected_nodes": 3,
+          "expected_mode": "sniff",
+          "expected_skip_unavailable": false
+        }
       }
     },
     {
       "name": "prod",
+      "environment": "prod",
       "base_url": "https://prod-es.example.com:9200",
       "verify_certs": true,
       "ca_cert": null,
+      "severity_policy": {
+        "_comment": "Phase-0 open decision #3: in prod, dropping below two connected nodes is Critical, not a Warning, and a degraded skippable remote is escalated because its data loss is silent.",
+        "critical_below_nodes": 2,
+        "escalate_warning_when_skip_unavailable": true
+      },
       "expected_remotes": {
-        "remote_prod_a": { "expected_nodes": 3, "expected_mode": "sniff" },
-        "remote_prod_b": { "expected_nodes": 3, "expected_mode": "sniff" }
+        "remote_prod_a": {
+          "expected_nodes": 3,
+          "expected_mode": "sniff",
+          "expected_skip_unavailable": false,
+          "expected_initial_connect_timeout": "30s"
+        },
+        "remote_prod_b": {
+          "expected_nodes": 3,
+          "expected_mode": "sniff",
+          "expected_skip_unavailable": false,
+          "expected_initial_connect_timeout": "30s"
+        }
       }
     },
     {
       "name": "ccs",
+      "environment": "ccs",
       "base_url": "https://ccs-es.example.com:9200",
       "verify_certs": true,
       "ca_cert": null,
       "expected_remotes": {
-        "remote_ccs_a": { "expected_nodes": 3, "expected_mode": "sniff" }
+        "remote_ccs_a": {
+          "expected_nodes": 3,
+          "expected_mode": "sniff",
+          "expected_skip_unavailable": false
+        }
       }
     }
   ]

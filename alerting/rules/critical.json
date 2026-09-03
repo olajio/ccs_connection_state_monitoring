@@ -1,0 +1,30 @@
+{
+  "_comment": "CCS-15 — Critical tier, grouped per (local cluster, remote) so each remote alerts and recovers independently. Placeholders in {{...}} are substituted by alerting/setup_alerting.py from es_clusters.json and the CLI. The doc_type filter excludes the per-run heartbeat document, which also carries the run's overall severity and would otherwise raise a duplicate alert.",
+  "rule_id": "ccs-connection-state-critical",
+  "name": "CCS connection state — CRITICAL",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["ccs", "connection-state", "critical", "elk-platform"],
+  "schedule": { "interval": "{{rule_interval}}" },
+  "params": {
+    "searchType": "esQuery",
+    "index": ["{{index}}"],
+    "timeField": "@timestamp",
+    "esQuery": "{\"query\":{\"bool\":{\"filter\":[{\"term\":{\"ccs.severity\":\"CRITICAL\"}},{\"terms\":{\"ccs.doc_type\":[\"remote\",\"cluster\"]}}]}}}",
+    "size": 10,
+    "aggType": "count",
+    "groupBy": "top",
+    "termField": "ccs.alert_key",
+    "termSize": 100,
+    "thresholdComparator": ">",
+    "threshold": [0],
+    "timeWindowSize": {{time_window_size}},
+    "timeWindowUnit": "{{time_window_unit}}",
+    "excludeHitsFromPreviousRun": false
+  },
+  "action_subject": "[CCS CRITICAL] {{context.group}} — remote connection state degraded",
+  "action_message": "CRITICAL: CCS remote connection state.\n\nAlert key (local_cluster:remote): {{context.group}}\nMatching verdicts in the last {{time_window_size}}{{time_window_unit}}: {{context.value}}\n\nWhat the collector saw:\n{{#context.hits}}  - {{_source.ccs.local_cluster}} / {{_source.ccs.remote}}: {{_source.ccs.reason}}\n{{/context.hits}}\nRule: {{rule.name}}\nView: {{context.link}}\n\nRunbook: docs/RUNBOOK.md — section \"CRITICAL\".\nA CRITICAL verdict means the pool has collapsed, a baselined remote has vanished from _remote/info, or the local cluster could not be probed at all. Cross-cluster searches touching this remote may be returning incomplete results right now.",
+  "recovery_subject": "[CCS RECOVERED] {{context.group}} — remote connection state restored",
+  "recovery_message": "RECOVERED: {{context.group}} no longer reports a CRITICAL connection-state verdict.\n\nNo CRITICAL verdict has been written for this remote in the last {{time_window_size}}{{time_window_unit}}.\n\nRule: {{rule.name}}\nView: {{context.link}}"
+}

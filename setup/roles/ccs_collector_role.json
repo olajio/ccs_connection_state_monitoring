@@ -1,0 +1,18 @@
+{
+  "_comment": "Least-privilege role for the COLLECTOR (CCS-9). 'monitor' at cluster level is what GET /_remote/info requires; the only index privilege is the right to append verdicts to ccs-health-monitor. No read, no delete, no other index. Apply with setup/setup_security.py.",
+  "cluster": ["monitor"],
+  "indices": [
+    {
+      "names": ["ccs-health-monitor", "ccs-health-monitor-*", ".ds-ccs-health-monitor-*"],
+      "privileges": ["create_doc", "create_index", "auto_configure", "view_index_metadata"],
+      "allow_restricted_indices": false
+    }
+  ],
+  "applications": [],
+  "run_as": [],
+  "metadata": {
+    "project": "CCS Remote Connection-State Degradation Monitoring",
+    "phase": "1",
+    "issue": "CCS-9"
+  }
+}

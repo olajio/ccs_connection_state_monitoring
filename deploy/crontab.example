@@ -1,0 +1,32 @@
+# CCS Remote Connection-State Degradation Monitoring — collector schedule (CCS-20)
+#
+# Install for the service account that owns /opt/ccs-health-monitor:
+#     sudo -u ccs-monitor crontab deploy/crontab.example
+#
+# ---------------------------------------------------------------------------
+# INTERVAL AND ALERT WINDOW MUST BE SIZED TOGETHER (plan risk #1)
+#
+# The Kibana alert window has to be WIDER than this interval, or ordinary cron
+# jitter produces a window with no verdict in it and the rules flap between
+# alert and recovery. alerting/setup_alerting.py defaults the window to 3x the
+# --probe-interval-minutes you give it. If you change the interval below, re-run
+# that script with the matching value.
+#
+#     interval 5m   -> alert window 15m, staleness window 45m
+#     interval 10m  -> alert window 30m, staleness window 90m
+# ---------------------------------------------------------------------------
+
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+MAILTO=""
+
+# Secrets Manager needs a region; drop these two lines when using file credentials.
+AWS_DEFAULT_REGION=us-gov-east-1
+AWS_REGION=us-gov-east-1
+
+# Every 5 minutes. Output is already in the log file, so stdout goes to /dev/null
+# and only real stderr from a crash reaches the log.
+*/5 * * * * /opt/ccs-health-monitor/venv/bin/python /opt/ccs-health-monitor/ccs_health_check.py --clusters /opt/ccs-health-monitor/es_clusters.json --log-file /var/log/ccs-health-monitor/collector.log --log-format json --quiet --no-color >/dev/null 2>>/var/log/ccs-health-monitor/cron-stderr.log
+
+# Optional: a daily full report, useful while the runbook is being socialised.
+# 0 7 * * * /opt/ccs-health-monitor/venv/bin/python /opt/ccs-health-monitor/ccs_health_check.py --clusters /opt/ccs-health-monitor/es_clusters.json --no-index --no-color --quiet --fail-on never

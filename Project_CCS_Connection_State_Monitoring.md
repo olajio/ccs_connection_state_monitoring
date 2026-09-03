@@ -44,9 +44,9 @@ Collector (cron, every N min)
        ├─ remote list from es_clusters.json
        ├─ API key from AWS Secrets Manager (boto3, runtime)
        ├─ GET /_remote/info per cluster, compare vs baseline
-       └─ one verdict doc per remote → .ccs-health-monitor
+       └─ one verdict doc per remote → ccs-health-monitor
 
-State store: .ccs-health-monitor  (decouples measuring from reacting; retains history)
+State store: ccs-health-monitor  (decouples measuring from reacting; retains history)
 
 Alerting: Kibana Elasticsearch Query rules
        ├─ critical / warning tiers, grouped per remote (independent recovery)
@@ -58,11 +58,11 @@ Alerting: Kibana Elasticsearch Query rules
 
 ## 4. Phases
 
-**Phase 0 — Definition & baseline.** Inventory every remote across the four clusters with expected `num_nodes_connected` and `mode`; finalize per-environment severity thresholds; confirm `skip_unavailable` posture; define the `.ccs-health-monitor` schema. *Exit: baseline table + schema + severity rules reviewed.*
+**Phase 0 — Definition & baseline.** Inventory every remote across the four clusters with expected `num_nodes_connected` and `mode`; finalize per-environment severity thresholds; confirm `skip_unavailable` posture; define the `ccs-health-monitor` schema. *Exit: baseline table + schema + severity rules reviewed.*
 
 **Phase 1 — Collector.** Build the connection-state probe in `ccs_health_check.py` (reusing `es_clusters.json`), with runtime Secrets Manager auth and a least-privilege key (`monitor` on clusters + write on the one index). *Exit: runs against all four clusters, writes correct verdicts.*
 
-**Phase 2 — State store.** Create `.ccs-health-monitor` with explicit mapping and ILM/DSL retention; confirm hidden-index read access for the alerting role. *Exit: verdicts land, queryable, retention enforced.*
+**Phase 2 — State store.** Create `ccs-health-monitor` with explicit mapping and ILM/DSL retention; confirm read access for the alerting role. The index name is deliberately **not** dot-prefixed: a visible index needs no restricted-index grants, appears in Discover and data views without extra configuration, and is far easier to inspect during an incident. *Exit: verdicts land, queryable, retention enforced.*
 
 **Phase 3 — Alerting.** Kibana ES Query rules for critical/warning, grouped per remote; existing SMTP connector with templated messages naming the failing remote; recovery action group; staleness rule. *Exit: induced non-prod failure fires the right tier and auto-resolves.*
 
@@ -112,7 +112,7 @@ Every remote probed on schedule · collapsed pool → critical within one probe+
 1. Probe interval — detection speed vs cluster load
 2. Per-remote expected `num_nodes_connected` baselines
 3. Per-environment severity thresholds (is one-of-three down warning or critical in prod?)
-4. `.ccs-health-monitor` retention period
+4. `ccs-health-monitor` retention period
 5. Which Kibana space hosts the rules, given the multi-space layout
 6. Notification routing — single inbox vs per-environment recipients
 
@@ -126,4 +126,4 @@ The following gaps were identified during review and folded into the plan above;
 - **Local-cluster-unreachable handling.** If the collector cannot reach a local cluster's `_remote/info` endpoint (network, auth, TLS), that cluster must emit a single **Critical** verdict rather than produce no verdict — otherwise a dead probe looks like health. (The Phase 3 staleness rule remains the backstop for a fully dead collector.)
 - **Per-remote / per-cluster isolation.** One failing remote or one unreachable cluster must never abort the evaluation loop for the others. Each remote and each cluster is evaluated in isolation.
 - **Unexpected/unmonitored remotes.** Remotes seen in `_remote/info` but absent from the baseline are surfaced as an informational signal so undocumented config changes are visible.
-- **Testing/first-run (this phase).** The initial collector prints verdicts to screen only — no writes to `.ccs-health-monitor` — for validation. Indexing, alerting, scheduling, and hardening (Phases 2–4) follow. Credentials are read from a local file in this phase and refactored to AWS Secrets Manager in Phase 1 hardening.
+- **Testing/first-run (this phase).** The initial collector prints verdicts to screen only — no writes to `ccs-health-monitor` — for validation. Indexing, alerting, scheduling, and hardening (Phases 2–4) follow. Credentials are read from a local file in this phase and refactored to AWS Secrets Manager in Phase 1 hardening.

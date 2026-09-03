@@ -46,7 +46,7 @@ Record `skip_unavailable` for every remote and note where `true` could mask
 silent downstream degradation; weight severity accordingly.
 **Acceptance:** `skip_unavailable` captured per remote with risk annotation.
 
-### CCS-5 · Design `.ccs-health-monitor` verdict schema
+### CCS-5 · Design `ccs-health-monitor` verdict schema
 **Type:** Task · **Phase:** 0 · **Milestone:** M0
 Define the verdict document schema (timestamp, local cluster, remote name,
 connected, nodes expected/actual, mode, skip_unavailable, severity, reason).
@@ -83,7 +83,7 @@ static key files in the deploy path.
 ### CCS-9 · Provision least-privilege service account / API key
 **Type:** Task · **Phase:** 1 · **Milestone:** M1
 Create a least-privilege credential: cluster `monitor` privilege plus write to
-the single `.ccs-health-monitor` index only.
+the single `ccs-health-monitor` index only.
 **Acceptance:** Key provisioned, scoped, and validated against a non-prod
 cluster.
 
@@ -99,9 +99,9 @@ the affected cluster only; other clusters still evaluated.
 
 ## Phase 2 — State store
 
-### CCS-11 · Create `.ccs-health-monitor` index with explicit mapping
+### CCS-11 · Create `ccs-health-monitor` index with explicit mapping
 **Type:** Task · **Phase:** 2 · **Milestone:** M2
-Create the hidden state index with the Phase 0 schema mapping.
+Create the state index (visible, not dot-prefixed) with the Phase 0 schema mapping.
 **Acceptance:** Index created; verdict docs index cleanly against the mapping.
 
 ### CCS-12 · Add ILM/DSL retention policy
@@ -112,12 +112,14 @@ Apply retention (ILM or data-stream lifecycle) per the agreed retention period.
 ### CCS-13 · Wire collector to write verdicts to state store
 **Type:** Task · **Phase:** 2 · **Milestone:** M2
 Enable indexing path in the collector (one verdict doc per remote per cycle).
-**Acceptance:** Verdicts land in `.ccs-health-monitor`, queryable, one doc per
+**Acceptance:** Verdicts land in `ccs-health-monitor`, queryable, one doc per
 remote per cycle.
 
-### CCS-14 · Confirm hidden-index read access for alerting role
+### CCS-14 · Confirm read access to the state store for the alerting role
 **Type:** Task · **Phase:** 2 · **Milestone:** M2
-Ensure the Kibana alerting role can read the hidden index.
+Ensure the Kibana alerting role can read `ccs-health-monitor`. Because the index is
+visible rather than dot-prefixed, a plain `read` grant is sufficient — no
+`allow_restricted_indices` is required.
 **Acceptance:** Alerting role queries the index successfully.
 
 ---
