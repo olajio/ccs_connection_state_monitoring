@@ -1,1 +1,10 @@
+# Runtime dependency of the collector and the setup scripts.
 requests>=2.31.0
+
+# Phase-1 hardening (CCS-8): only needed when credentials.provider is
+# 'aws_secrets_manager'. The import is lazy, so file- and env-based deployments
+# run fine without it.
+boto3>=1.34.0
+
+# Tests need nothing beyond the standard library: ./run_tests.sh uses unittest
+# and the bundled mock Elasticsearch in tools/mock_es_server.py.

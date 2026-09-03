@@ -1,0 +1,30 @@
+{
+  "_comment": "CCS-16 — Warning tier: partial pool or configuration drift, deliberately distinct from the critical rule so a degraded-but-serving remote does not page anyone at 03:00.",
+  "rule_id": "ccs-connection-state-warning",
+  "name": "CCS connection state — WARNING",
+  "rule_type_id": ".es-query",
+  "consumer": "stackAlerts",
+  "enabled": true,
+  "tags": ["ccs", "connection-state", "warning", "elk-platform"],
+  "schedule": { "interval": "{{rule_interval}}" },
+  "params": {
+    "searchType": "esQuery",
+    "index": ["{{index}}"],
+    "timeField": "@timestamp",
+    "esQuery": "{\"query\":{\"bool\":{\"filter\":[{\"term\":{\"ccs.severity\":\"WARNING\"}},{\"terms\":{\"ccs.doc_type\":[\"remote\",\"cluster\"]}}]}}}",
+    "size": 10,
+    "aggType": "count",
+    "groupBy": "top",
+    "termField": "ccs.alert_key",
+    "termSize": 100,
+    "thresholdComparator": ">",
+    "threshold": [0],
+    "timeWindowSize": {{time_window_size}},
+    "timeWindowUnit": "{{time_window_unit}}",
+    "excludeHitsFromPreviousRun": false
+  },
+  "action_subject": "[CCS WARNING] {{context.group}} — remote connection pool degraded",
+  "action_message": "WARNING: CCS remote connection state.\n\nAlert key (local_cluster:remote): {{context.group}}\nMatching verdicts in the last {{time_window_size}}{{time_window_unit}}: {{context.value}}\n\nWhat the collector saw:\n{{#context.hits}}  - {{_source.ccs.local_cluster}} / {{_source.ccs.remote}}: {{_source.ccs.reason}}\n{{/context.hits}}\nRule: {{rule.name}}\nView: {{context.link}}\n\nRunbook: docs/RUNBOOK.md — section \"WARNING\".\nThe remote is still connected but the pool is below its Phase-0 baseline, or its configuration has drifted. Searches still succeed; treat this as degradation to investigate in hours, not a page.",
+  "recovery_subject": "[CCS RECOVERED] {{context.group}} — connection pool back to baseline",
+  "recovery_message": "RECOVERED: {{context.group}} no longer reports a WARNING connection-state verdict.\n\nNo WARNING verdict has been written for this remote in the last {{time_window_size}}{{time_window_unit}}.\n\nRule: {{rule.name}}\nView: {{context.link}}"
+}

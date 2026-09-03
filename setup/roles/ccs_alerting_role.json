@@ -1,0 +1,18 @@
+{
+  "_comment": "Least-privilege role for the KIBANA ALERTING user (CCS-14). Read-only on the state store. Because ccs-health-monitor is a visible (non dot-prefixed) index, no restricted-index grant is needed — that is the practical reason this project avoids a hidden index name.",
+  "cluster": ["monitor"],
+  "indices": [
+    {
+      "names": ["ccs-health-monitor", "ccs-health-monitor-*", ".ds-ccs-health-monitor-*"],
+      "privileges": ["read", "view_index_metadata"],
+      "allow_restricted_indices": false
+    }
+  ],
+  "applications": [],
+  "run_as": [],
+  "metadata": {
+    "project": "CCS Remote Connection-State Degradation Monitoring",
+    "phase": "2",
+    "issue": "CCS-14"
+  }
+}

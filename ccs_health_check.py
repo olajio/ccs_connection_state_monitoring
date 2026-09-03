@@ -1,319 +1,380 @@
 #!/usr/bin/env python3
 """
-ccs_health_check.py — CCS Remote Connection-State Degradation Monitoring (Phase 1 collector).
+ccs_health_check.py — CCS Remote Connection-State Degradation Monitoring collector.
 
-Reads a local-cluster inventory (es_clusters.json) and credentials (credentials.json),
-calls `GET /_remote/info` on each LOCAL Elasticsearch cluster, and evaluates the
-connection state of every configured remote against its Phase-0 baseline.
+Probes `GET /_remote/info` on every LOCAL Elasticsearch cluster in the inventory,
+compares each remote against its Phase-0 baseline, and emits a severity verdict
+per remote. Verdicts are printed and (unless --no-index) written to the
+`ccs-health-monitor` state store, where the Kibana rules read them.
 
-Verdict per remote:
-    HEALTHY   connected AND num_nodes_connected >= expected_nodes AND mode matches
-    WARNING   connected but fewer nodes than expected (partial pool), OR mode drift
-    CRITICAL  connected: false, OR a baseline remote is missing from _remote/info,
-              OR the local cluster is unreachable / auth / TLS failure
+    HEALTHY   connected, pool at or above the baseline, no configuration drift
+    WARNING   connected but partial pool, or mode / timeout / skip_unavailable drift
+    CRITICAL  connected=false, pool below the critical floor, a baselined remote
+              missing from _remote/info, or the local cluster is unreachable
+    INFO      a remote present in _remote/info but absent from the baseline
 
-Also surfaces remotes present in _remote/info but absent from the baseline as an
-informational "unmonitored remote" signal.
+Every remote and every cluster is evaluated in isolation: one failing remote or
+one unreachable cluster never aborts the rest of the run.
 
-Phase-1 behavior (intentional, per the project plan):
-  * Credentials are read from a FILE. This is refactored to AWS Secrets Manager later.
-  * Verdicts are PRINTED TO SCREEN ONLY — nothing is indexed into Elasticsearch yet.
+Exit codes:
+    0  all verdicts HEALTHY/INFO
+    1  at least one verdict at or above --fail-on (default WARNING)
+    2  configuration or usage error (nothing was probed)
+    3  probing succeeded but writing to the state store failed
 
-Each remote and each cluster is evaluated in isolation: one failing remote or one
-unreachable cluster never aborts evaluation of the others.
-
-Usage:
-    python3 ccs_health_check.py
-    python3 ccs_health_check.py --clusters es_clusters.json --credentials credentials.json
-    python3 ccs_health_check.py --no-color
+Examples:
+    ./ccs_health_check.py
+    ./ccs_health_check.py --no-index --format table          # Phase-1 dress rehearsal
+    ./ccs_health_check.py --no-index --format ndjson         # exactly what would be indexed
+    ./ccs_health_check.py --cluster prod --log-level DEBUG
+    ./ccs_health_check.py --credentials-provider aws_secrets_manager \
+        --secret-id ccs/es/api-keys --aws-region us-gov-east-1
+    ./ccs_health_check.py --check-state-store
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import logging
 import sys
-from datetime import datetime, timezone
+import time
+from typing import List, Optional
 
-try:
-    import requests
-except ImportError:  # pragma: no cover
-    sys.stderr.write(
-        "Missing dependency 'requests'. Install with: pip install -r requirements.txt\n"
+from ccs_monitor import __version__
+from ccs_monitor.config import AppConfig, ConfigError, load_config
+from ccs_monitor.credentials import CredentialError, build_provider
+from ccs_monitor.documents import build_documents, new_run_id, utc_now_iso
+from ccs_monitor.evaluate import evaluate_cluster, overall_severity, severity_counts
+from ccs_monitor.logging_setup import configure_logging
+from ccs_monitor.probe import probe_cluster
+from ccs_monitor.report import (
+    build_json_report,
+    print_json,
+    print_ndjson,
+    print_table,
+    should_use_color,
+)
+from ccs_monitor.severity import SEVERITY_RANK
+from ccs_monitor.sink import StateStoreWriter
+
+LOG = logging.getLogger("ccs.collector")
+
+EXIT_OK = 0
+EXIT_DEGRADED = 1
+EXIT_CONFIG_ERROR = 2
+EXIT_SINK_ERROR = 3
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+def parse_args(argv: List[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="ccs_health_check.py",
+        description="CCS remote connection-state health check.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Exit codes: 0 healthy · 1 degraded · 2 config error · 3 state-store write failure"
+        ),
     )
-    sys.exit(2)
+    parser.add_argument("--version", action="version", version=f"ccs-health-monitor {__version__}")
+
+    source = parser.add_argument_group("inventory and credentials")
+    source.add_argument("-c", "--clusters", default="es_clusters.json",
+                        help="Cluster inventory / baseline file (default: %(default)s).")
+    source.add_argument("--credentials", default=None,
+                        help="Credentials file for the 'file' provider (overrides the inventory).")
+    source.add_argument("--credentials-provider", choices=("file", "aws_secrets_manager", "env"),
+                        default=None, help="Override the credential provider.")
+    source.add_argument("--secret-id", default=None,
+                        help="Secrets Manager secret holding every cluster's key.")
+    source.add_argument("--secret-id-template", default=None,
+                        help="Per-cluster secret id template, e.g. 'ccs/es/{cluster}'.")
+    source.add_argument("--aws-region", default=None, help="AWS region for Secrets Manager.")
+    source.add_argument("--aws-profile", default=None, help="AWS profile for Secrets Manager.")
+
+    selection = parser.add_argument_group("selection")
+    selection.add_argument("--cluster", action="append", dest="only_clusters", metavar="NAME",
+                           help="Probe only this local cluster (repeatable).")
+    selection.add_argument("--timeout", type=float, default=None,
+                           help="Override the per-request timeout, in seconds.")
+
+    output = parser.add_argument_group("output")
+    output.add_argument("-f", "--format", choices=("table", "json", "ndjson"), default="table",
+                        help="Report format (default: %(default)s).")
+    output.add_argument("--no-color", action="store_true", help="Disable ANSI color.")
+    output.add_argument("--problems-only", action="store_true",
+                        help="Hide HEALTHY verdicts in the table report.")
+    output.add_argument("--quiet", action="store_true",
+                        help="Suppress log output on stderr (the report still prints).")
+    output.add_argument("--log-level", default="INFO",
+                        choices=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"))
+    output.add_argument("--log-file", default=None, help="Also write logs to this file.")
+    output.add_argument("--log-format", choices=("text", "json"), default="text")
+
+    store = parser.add_argument_group("state store")
+    store.add_argument("--no-index", "--dry-run", dest="no_index", action="store_true",
+                       help="Do not write to the state store (Phase-1 behaviour).")
+    store.add_argument("--index", dest="force_index", action="store_true",
+                       help="Force indexing even if state_store.enabled is false.")
+    store.add_argument("--check-state-store", action="store_true",
+                       help="Verify the state store exists and is reachable, then exit.")
+    store.add_argument("--fail-on", choices=("WARNING", "CRITICAL", "never"), default="WARNING",
+                       help="Lowest severity that produces exit code 1 (default: %(default)s).")
+
+    misc = parser.add_argument_group("diagnostics")
+    misc.add_argument("--show-config", action="store_true",
+                      help="Print the resolved configuration and exit (no secrets shown).")
+
+    return parser.parse_args(argv)
 
 
-# --------------------------------------------------------------------------- #
-# Severity model
-# --------------------------------------------------------------------------- #
+def apply_overrides(config: AppConfig, args: argparse.Namespace) -> AppConfig:
+    """Apply CLI overrides onto the loaded configuration."""
+    creds = config.credentials
+    if args.credentials_provider:
+        creds.provider = args.credentials_provider
+    if args.credentials:
+        creds.path = args.credentials
+        if not args.credentials_provider:
+            creds.provider = "file"
+    if args.secret_id:
+        creds.secret_id = args.secret_id
+        if not args.credentials_provider:
+            creds.provider = "aws_secrets_manager"
+    if args.secret_id_template:
+        creds.secret_id_template = args.secret_id_template
+        if not args.credentials_provider:
+            creds.provider = "aws_secrets_manager"
+    if args.aws_region:
+        creds.region = args.aws_region
+    if args.aws_profile:
+        creds.profile = args.aws_profile
 
-# Ordered from best to worst so we can track the worst verdict seen.
-SEVERITY_ORDER = ["HEALTHY", "INFO", "WARNING", "CRITICAL"]
-SEVERITY_RANK = {name: i for i, name in enumerate(SEVERITY_ORDER)}
-
-_COLORS = {
-    "HEALTHY": "\033[92m",   # green
-    "INFO": "\033[96m",      # cyan
-    "WARNING": "\033[93m",   # yellow
-    "CRITICAL": "\033[91m",  # red
-    "RESET": "\033[0m",
-    "BOLD": "\033[1m",
-}
-
-
-def _c(text: str, key: str, use_color: bool) -> str:
-    if not use_color:
-        return text
-    return f"{_COLORS.get(key, '')}{text}{_COLORS['RESET']}"
-
-
-def worst(a: str, b: str) -> str:
-    return a if SEVERITY_RANK[a] >= SEVERITY_RANK[b] else b
-
-
-# --------------------------------------------------------------------------- #
-# Config loading
-# --------------------------------------------------------------------------- #
-
-def load_json(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as fh:
-        return json.load(fh)
-
-
-def get_api_key(credentials: dict, cluster_name: str) -> str | None:
-    """Return the API key for a cluster, or None if not present.
-
-    Isolated here so swapping file-based creds for AWS Secrets Manager later
-    touches exactly one function.
-    """
-    entry = credentials.get(cluster_name)
-    if not entry:
-        return None
-    return entry.get("api_key")
-
-
-# --------------------------------------------------------------------------- #
-# Probing
-# --------------------------------------------------------------------------- #
-
-def fetch_remote_info(cluster: dict, api_key: str, timeout: float = 10.0) -> dict:
-    """Call GET /_remote/info on a local cluster. Returns the parsed JSON body.
-
-    Raises on any failure (network, TLS, auth, non-2xx) so the caller can turn it
-    into a single CRITICAL verdict for the cluster.
-    """
-    base_url = cluster["base_url"].rstrip("/")
-    url = f"{base_url}/_remote/info"
-
-    verify = cluster.get("ca_cert") or cluster.get("verify_certs", True)
-    headers = {"Authorization": f"ApiKey {api_key}", "Accept": "application/json"}
-
-    resp = requests.get(url, headers=headers, timeout=timeout, verify=verify)
-    resp.raise_for_status()
-    return resp.json()
-
-
-# --------------------------------------------------------------------------- #
-# Evaluation
-# --------------------------------------------------------------------------- #
-
-def evaluate_remote(name: str, baseline: dict, observed: dict | None) -> dict:
-    """Compare one remote's observed state against its baseline; return a verdict."""
-    expected_nodes = baseline.get("expected_nodes")
-    expected_mode = baseline.get("expected_mode")
-
-    # Baseline remote entirely absent from _remote/info -> config drift / removed.
-    if observed is None:
-        return {
-            "remote": name,
-            "severity": "CRITICAL",
-            "connected": None,
-            "expected_nodes": expected_nodes,
-            "actual_nodes": None,
-            "expected_mode": expected_mode,
-            "actual_mode": None,
-            "skip_unavailable": None,
-            "reason": "Baseline remote missing from _remote/info (config drift or removed)",
-        }
-
-    connected = observed.get("connected", False)
-    actual_nodes = observed.get("num_nodes_connected")
-    actual_mode = observed.get("mode")
-    skip_unavailable = observed.get("skip_unavailable")
-
-    reasons = []
-    severity = "HEALTHY"
-
-    if not connected:
-        severity = "CRITICAL"
-        reasons.append("connected: false (pool collapsed / remote unreachable)")
-    else:
-        if expected_nodes is not None and actual_nodes is not None and actual_nodes < expected_nodes:
-            severity = worst(severity, "WARNING")
-            reasons.append(
-                f"partial pool: {actual_nodes}/{expected_nodes} nodes connected"
-            )
-        if expected_mode is not None and actual_mode is not None and actual_mode != expected_mode:
-            severity = worst(severity, "WARNING")
-            reasons.append(f"mode drift: expected '{expected_mode}', got '{actual_mode}'")
-
-    if skip_unavailable:
-        reasons.append("skip_unavailable=true (degradation may be silent downstream)")
-
-    if not reasons:
-        reasons.append(f"connected, {actual_nodes}/{expected_nodes} nodes, mode '{actual_mode}'")
-
-    return {
-        "remote": name,
-        "severity": severity,
-        "connected": connected,
-        "expected_nodes": expected_nodes,
-        "actual_nodes": actual_nodes,
-        "expected_mode": expected_mode,
-        "actual_mode": actual_mode,
-        "skip_unavailable": skip_unavailable,
-        "reason": "; ".join(reasons),
-    }
-
-
-def evaluate_cluster(cluster: dict, credentials: dict) -> dict:
-    """Probe and evaluate every remote for one local cluster, in isolation."""
-    name = cluster["name"]
-    expected_remotes = cluster.get("expected_remotes", {})
-    result = {"cluster": name, "base_url": cluster.get("base_url"), "verdicts": []}
-
-    api_key = get_api_key(credentials, name)
-    if not api_key:
-        result["cluster_severity"] = "CRITICAL"
-        result["error"] = f"No API key found for cluster '{name}' in credentials file"
-        return result
-
-    try:
-        remote_info = fetch_remote_info(cluster, api_key)
-    except requests.exceptions.SSLError as exc:
-        result["cluster_severity"] = "CRITICAL"
-        result["error"] = f"TLS verification failed: {exc}"
-        return result
-    except requests.exceptions.RequestException as exc:
-        result["cluster_severity"] = "CRITICAL"
-        result["error"] = f"Local cluster unreachable / probe failed: {exc}"
-        return result
-    except ValueError as exc:  # bad JSON
-        result["cluster_severity"] = "CRITICAL"
-        result["error"] = f"Invalid response from _remote/info: {exc}"
-        return result
-
-    cluster_severity = "HEALTHY"
-
-    # Evaluate every baselined remote (present or missing).
-    for remote_name, baseline in expected_remotes.items():
-        verdict = evaluate_remote(remote_name, baseline, remote_info.get(remote_name))
-        cluster_severity = worst(cluster_severity, verdict["severity"])
-        result["verdicts"].append(verdict)
-
-    # Surface remotes seen but not baselined (informational).
-    for observed_name in remote_info:
-        if observed_name not in expected_remotes:
-            obs = remote_info[observed_name] or {}
-            cluster_severity = worst(cluster_severity, "INFO")
-            result["verdicts"].append({
-                "remote": observed_name,
-                "severity": "INFO",
-                "connected": obs.get("connected"),
-                "expected_nodes": None,
-                "actual_nodes": obs.get("num_nodes_connected"),
-                "expected_mode": None,
-                "actual_mode": obs.get("mode"),
-                "skip_unavailable": obs.get("skip_unavailable"),
-                "reason": "Unmonitored remote: present in _remote/info but not in baseline",
-            })
-
-    result["cluster_severity"] = cluster_severity
-    return result
-
-
-# --------------------------------------------------------------------------- #
-# Reporting (screen only — no indexing in this phase)
-# --------------------------------------------------------------------------- #
-
-def print_report(results: list[dict], use_color: bool) -> str:
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    overall = "HEALTHY"
-
-    print(_c("=" * 78, "BOLD", use_color))
-    print(_c(f" CCS Remote Connection-State Health Check  ·  {ts}", "BOLD", use_color))
-    print(_c("=" * 78, "BOLD", use_color))
-
-    for res in results:
-        cluster_sev = res.get("cluster_severity", "HEALTHY")
-        overall = worst(overall, cluster_sev)
-        header = f"\nLocal cluster: {res['cluster']}  ({res.get('base_url', '?')})"
-        print(_c(header, "BOLD", use_color))
-        print(f"  cluster status: {_c(cluster_sev, cluster_sev, use_color)}")
-
-        if res.get("error"):
-            print(f"    {_c('!', 'CRITICAL', use_color)} {res['error']}")
-            continue
-
-        if not res["verdicts"]:
-            print("    (no remotes configured in baseline)")
-            continue
-
-        for v in res["verdicts"]:
-            sev = v["severity"]
-            tag = _c(f"[{sev}]", sev, use_color)
-            print(f"    {tag} {v['remote']}")
-            print(f"        {v['reason']}")
-
-    print()
-    print(_c("-" * 78, "BOLD", use_color))
-    print(f" OVERALL: {_c(overall, overall, use_color)}")
-    print(_c("-" * 78, "BOLD", use_color))
-    return overall
-
-
-# --------------------------------------------------------------------------- #
-# Entrypoint
-# --------------------------------------------------------------------------- #
-
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="CCS remote connection-state health check (Phase 1).")
-    p.add_argument("--clusters", default="es_clusters.json", help="Path to cluster inventory JSON.")
-    p.add_argument("--credentials", default="credentials.json", help="Path to credentials JSON.")
-    p.add_argument("--no-color", action="store_true", help="Disable ANSI color output.")
-    return p.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv if argv is not None else sys.argv[1:])
-    use_color = (not args.no_color) and sys.stdout.isatty()
-
-    try:
-        inventory = load_json(args.clusters)
-    except (OSError, ValueError) as exc:
-        sys.stderr.write(f"Failed to load clusters file '{args.clusters}': {exc}\n")
-        return 2
-
-    try:
-        credentials = load_json(args.credentials)
-    except (OSError, ValueError) as exc:
-        sys.stderr.write(
-            f"Failed to load credentials file '{args.credentials}': {exc}\n"
-            f"Copy credentials.example.json to '{args.credentials}' and fill in API keys.\n"
+    if creds.provider == "aws_secrets_manager" and not (creds.secret_id or creds.secret_id_template):
+        raise ConfigError(
+            "provider 'aws_secrets_manager' needs --secret-id or --secret-id-template "
+            "(or the equivalent keys in the inventory's 'credentials' block)."
         )
-        return 2
 
-    clusters = inventory.get("clusters", [])
+    if args.timeout is not None:
+        if args.timeout <= 0:
+            raise ConfigError("--timeout must be greater than zero")
+        for cluster in config.clusters:
+            cluster.timeout = args.timeout
+        config.state_store.timeout = args.timeout
+
+    if args.only_clusters:
+        known = {c.name for c in config.clusters}
+        unknown = [name for name in args.only_clusters if name not in known]
+        if unknown:
+            raise ConfigError(
+                f"--cluster: unknown cluster(s) {', '.join(unknown)}. "
+                f"Known: {', '.join(sorted(known))}"
+            )
+        selected = set(args.only_clusters)
+        for cluster in config.clusters:
+            cluster.enabled = cluster.name in selected
+
+    if args.force_index:
+        config.state_store.enabled = True
+    return config
+
+
+def show_config(config: AppConfig) -> None:
+    """Print the resolved configuration — never any secret material."""
+    print(f"inventory:   {config.source_path}")
+    print(f"credentials: provider={config.credentials.provider}")
+    if config.credentials.provider == "file":
+        print(f"             path={config.credentials.path}")
+    elif config.credentials.provider == "aws_secrets_manager":
+        print(f"             secret_id={config.credentials.secret_id}")
+        print(f"             secret_id_template={config.credentials.secret_id_template}")
+        print(f"             region={config.credentials.region} profile={config.credentials.profile}")
+    else:
+        print(f"             env_prefix={config.credentials.env_prefix}")
+
+    store = config.state_store
+    print(
+        f"state store: enabled={store.enabled} index={store.index} mode={store.mode} "
+        f"lifecycle={store.lifecycle} retention={store.retention}"
+    )
+    print(f"             target={store.cluster or store.base_url}")
+
+    for cluster in config.clusters:
+        flag = "" if cluster.enabled else "  (disabled)"
+        print(f"\ncluster {cluster.name} [{cluster.environment}]{flag}")
+        print(f"  url:     {cluster.base_url}")
+        print(f"  verify:  {cluster.verify}   timeout={cluster.timeout}s retries={cluster.retries}")
+        print(f"  creds:   key={cluster.credential_name}")
+        if not cluster.expected_remotes:
+            print("  remotes: (none baselined — every remote will report as unmonitored INFO)")
+        for name, baseline in cluster.expected_remotes.items():
+            policy = cluster.policy_for(baseline)
+            print(
+                f"  remote {name}: nodes={baseline.expected_nodes} mode={baseline.expected_mode} "
+                f"skip_unavailable={baseline.expected_skip_unavailable} "
+                f"timeout={baseline.expected_initial_connect_timeout}"
+            )
+            print(
+                f"      policy: partial_pool={policy['partial_pool']} "
+                f"critical_below_nodes={policy['critical_below_nodes']} "
+                f"mode_drift={policy['mode_drift']} "
+                f"escalate_when_skippable={policy['escalate_warning_when_skip_unavailable']}"
+            )
+
+
+# --------------------------------------------------------------------------- #
+# Main
+# --------------------------------------------------------------------------- #
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    configure_logging(
+        level=args.log_level,
+        log_file=args.log_file,
+        log_format=args.log_format,
+        quiet=args.quiet,
+    )
+
+    try:
+        config = apply_overrides(load_config(args.clusters), args)
+    except ConfigError as exc:
+        LOG.error("configuration error: %s", exc)
+        sys.stderr.write(f"Configuration error: {exc}\n")
+        return EXIT_CONFIG_ERROR
+
+    if args.show_config:
+        show_config(config)
+        return EXIT_OK
+
+    try:
+        provider = build_provider(config.credentials)
+    except CredentialError as exc:
+        LOG.error("credential provider error: %s", exc)
+        sys.stderr.write(f"Credential error: {exc}\n")
+        return EXIT_CONFIG_ERROR
+
+    if args.check_state_store:
+        return check_state_store(config, provider)
+
+    clusters = config.enabled_clusters
     if not clusters:
-        sys.stderr.write("No clusters defined in inventory.\n")
-        return 2
+        sys.stderr.write("No clusters selected — nothing to probe.\n")
+        return EXIT_CONFIG_ERROR
 
-    results = [evaluate_cluster(cluster, credentials) for cluster in clusters]
-    overall = print_report(results, use_color)
+    run_id = new_run_id()
+    started = time.perf_counter()
+    LOG.info("run_id=%s starting: %d local cluster(s)", run_id, len(clusters))
 
-    # Non-zero exit if anything is worse than healthy — handy for later scheduling.
-    return 0 if overall in ("HEALTHY", "INFO") else 1
+    # Isolation: probe + evaluate each cluster independently.
+    cluster_verdicts = []
+    for cluster in clusters:
+        probe = probe_cluster(cluster, provider)
+        cluster_verdicts.append(evaluate_cluster(cluster, probe))
+
+    duration_ms = (time.perf_counter() - started) * 1000
+    overall = overall_severity(cluster_verdicts)
+    counts = severity_counts(cluster_verdicts)
+    timestamp = utc_now_iso()
+
+    # ---- report ---------------------------------------------------------- #
+    if args.format == "table":
+        print_table(
+            cluster_verdicts,
+            overall,
+            run_id,
+            timestamp,
+            use_color=should_use_color(args.no_color),
+            show_healthy=not args.problems_only,
+        )
+    elif args.format == "json":
+        print_json(build_json_report(cluster_verdicts, overall, run_id, timestamp, duration_ms))
+    else:
+        print_ndjson(
+            cluster_verdicts,
+            run_id,
+            overall,
+            duration_ms,
+            include_run_document=config.state_store.write_run_document,
+        )
+
+    # ---- state store ----------------------------------------------------- #
+    sink_failed = False
+    if config.state_store.enabled and not args.no_index:
+        documents = build_documents(
+            cluster_verdicts,
+            run_id,
+            include_run_document=config.state_store.write_run_document,
+            overall=overall,
+            counts=counts,
+            duration_ms=duration_ms,
+        )
+        try:
+            writer = StateStoreWriter(config, provider)
+            result = writer.write(documents)
+        except ConfigError as exc:
+            LOG.error("state store misconfigured: %s", exc)
+            sys.stderr.write(f"State store error: {exc}\n")
+            return EXIT_CONFIG_ERROR
+
+        if result.skipped:
+            LOG.info("state store write skipped: %s", result.reason)
+        elif not result.ok:
+            sink_failed = True
+            sys.stderr.write(
+                f"State-store write failed: {result.failed}/{result.attempted} documents "
+                f"rejected. First errors: {'; '.join(result.errors[:3])}\n"
+            )
+        else:
+            LOG.info(
+                "run_id=%s wrote %d document(s) to %s", run_id, result.indexed, config.state_store.index
+            )
+    elif args.no_index:
+        LOG.info("run_id=%s --no-index: %d verdict(s) not written", run_id, sum(counts.values()))
+
+    LOG.info(
+        "run_id=%s finished overall=%s duration_ms=%.0f counts=%s",
+        run_id, overall, duration_ms, counts,
+    )
+
+    # A write failure outranks a degraded verdict: if verdicts cannot land, the
+    # alerting layer is blind and that is the more urgent problem.
+    if sink_failed:
+        return EXIT_SINK_ERROR
+    if args.fail_on != "never" and SEVERITY_RANK[overall] >= SEVERITY_RANK[args.fail_on]:
+        return EXIT_DEGRADED
+    return EXIT_OK
+
+
+def check_state_store(config: AppConfig, provider) -> int:
+    """--check-state-store: confirm the verdict target exists and is reachable."""
+    store = config.state_store
+    if not store.enabled:
+        print("state_store.enabled is false — nothing to check.")
+        return EXIT_OK
+    try:
+        info = StateStoreWriter(config, provider).verify_target()
+    except (ConfigError, CredentialError) as exc:
+        sys.stderr.write(f"State store check failed: {exc}\n")
+        return EXIT_CONFIG_ERROR
+    except Exception as exc:  # noqa: BLE001 - HttpError and friends
+        sys.stderr.write(f"State store check failed: {exc}\n")
+        return EXIT_SINK_ERROR
+
+    if info.get("exists"):
+        print(f"OK: {info['kind']} '{info['name']}' exists and is reachable.")
+        for key in ("backing_indices", "resolved", "lifecycle"):
+            if info.get(key):
+                print(f"    {key}: {info[key]}")
+        return EXIT_OK
+
+    print(
+        f"MISSING: {info['kind']} '{info['name']}' does not exist.\n"
+        f"Create it with:  python3 setup/setup_state_store.py --clusters {config.source_path}"
+    )
+    return EXIT_SINK_ERROR
 
 
 if __name__ == "__main__":
